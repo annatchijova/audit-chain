@@ -22,8 +22,17 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const GENESIS_HASH: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000000";
+// Exactly 64 hex chars (SHA-256 digest length), built with `.repeat()`
+// the same way the Java version does (`"0".repeat(64)`) — auditor
+// finding: an earlier version of this constant was a hardcoded literal
+// with 67 characters that relied on `[..64]` slicing elsewhere to
+// truncate it correctly. Functionally harmless (every use site sliced
+// to 64), but a landmine for any future reader who assumes
+// `GENESIS_HASH.len() == 64` without checking. Building it
+// programmatically removes the possibility of the count being wrong.
+fn genesis_hash() -> String {
+    "0".repeat(64)
+}
 
 #[derive(Clone, Debug)]
 struct AuditEntry {
@@ -63,7 +72,7 @@ impl AuditChain {
     fn new() -> Self {
         AuditChain {
             entries: Vec::with_capacity(1024),
-            last_hash: GENESIS_HASH[..64].to_string(),
+            last_hash: genesis_hash(),
         }
     }
 
@@ -97,7 +106,7 @@ impl AuditChain {
     /// the C signature `int chain_verify(const AuditChain *chain)` enforces
     /// beyond a `const` that a careless cast could discard.
     fn verify(&self) -> bool {
-        let mut expected_prev = GENESIS_HASH[..64].to_string();
+        let mut expected_prev = genesis_hash();
 
         for e in &self.entries {
             if e.prev_hash != expected_prev {
@@ -125,8 +134,104 @@ impl AuditChain {
     }
 }
 
+/// Three independent reviews of this project converged on the same
+/// finding: we built the whole integrity apparatus and never attacked
+/// it. This runs four tamper scenarios and reports whether `verify()`
+/// catches each — including scenario 4, which it should NOT catch: a
+/// full cascade forgery. See the C version's comment for the full
+/// explanation of why that is a fundamental limitation of bare hash
+/// chains, not a bug in this implementation.
+fn run_attack_demo() {
+    println!("\n=== Rust: tamper / attack demo ===");
+
+    fn build_small_chain(n: u64) -> AuditChain {
+        let mut c = AuditChain::new();
+        for i in 0..n {
+            c.append(&format!("genuine_event_{}", i));
+        }
+        c
+    }
+
+    fn recompute_hash(e: &AuditEntry) -> String {
+        let content = format!("{}|{}|{}|{}", e.index, e.timestamp_ms, e.event, e.prev_hash);
+        sha256_hex(&content)
+    }
+
+    // --- Scenario 1: naive tamper ---
+    {
+        let mut c = build_small_chain(10);
+        c.entries[3].event = "TAMPERED_EVENT_no_hash_fix".to_string();
+        let ok = c.verify();
+        println!(
+            "[1] Naive tamper (event changed, hash left alone):     verify()={}  (expected: false)",
+            ok
+        );
+    }
+
+    // --- Scenario 2: reorder ---
+    {
+        let mut c = build_small_chain(10);
+        c.entries.swap(3, 4);
+        let ok = c.verify();
+        println!(
+            "[2] Reorder (swap entries 3 and 4 in place):           verify()={}  (expected: false)",
+            ok
+        );
+    }
+
+    // --- Scenario 3: deletion ---
+    {
+        let mut c = build_small_chain(10);
+        c.entries.remove(3);
+        let ok = c.verify();
+        println!(
+            "[3] Deletion (remove entry 3, shift rest down):        verify()={}  (expected: false)",
+            ok
+        );
+    }
+
+    // --- Scenario 4: full cascade forgery ---
+    {
+        let mut c = build_small_chain(10);
+        c.entries[3].event = "FORGED_EVENT_fully_recomputed".to_string();
+        // Attacker knows the hash function (it's public) and has full
+        // write access. Recompute entry 3's hash, then propagate into
+        // entry 4's prev_hash, and so on to the end.
+        c.entries[3].hash = recompute_hash(&c.entries[3]);
+        for i in 4..c.entries.len() {
+            c.entries[i].prev_hash = c.entries[i - 1].hash.clone();
+            let new_hash = recompute_hash(&c.entries[i]);
+            c.entries[i].hash = new_hash;
+        }
+        let ok = c.verify();
+        println!(
+            "[4] Cascade forgery (tamper + recompute forward):      verify()={}  (expected: TRUE — this is the limitation)",
+            ok
+        );
+    }
+
+    println!(
+        "\nConclusion: a bare hash chain proves \"nothing changed after\n\
+         the fact I'm holding\" — it does NOT prove \"nothing changed,\n\
+         period,\" against an attacker with full write access who knows\n\
+         the (public) hash function. Scenarios 1-3 are caught because\n\
+         they're PARTIAL edits. Scenario 4 is not caught because a\n\
+         consistent chain can always be re-derived from the tamper\n\
+         point forward. Real integrity requires an external anchor the\n\
+         attacker cannot also rewrite: an offline signature, a separate\n\
+         transparency log, RFC3161 timestamping, or an HMAC key that\n\
+         never lives on the same machine as the editable log."
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    if args.get(1).map(|s| s.as_str()) == Some("attack") {
+        run_attack_demo();
+        return;
+    }
+
     let n_entries: u64 = args
         .get(1)
         .and_then(|s| s.parse().ok())

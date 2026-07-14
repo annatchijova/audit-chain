@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <time.h>
 #include <pthread.h>
 
@@ -145,6 +146,35 @@ static void sha256_hex(const char *input, size_t len, char out_hex[65]) {
     out_hex[64] = '\0';
 }
 
+/* Auditor finding (HIGH): snprintf's return value was previously unchecked
+ * at every call site that builds the canonical content string. snprintf
+ * returns the number of bytes it WOULD have written if the buffer were
+ * big enough — if that exceeds the buffer size, truncation occurred
+ * silently, and the hash would be computed over truncated content with
+ * no indication anything was wrong. For a forensic hash chain, silently
+ * hashing truncated data is unacceptable: two different long events
+ * sharing the same first ~264 bytes would produce the same hash, and
+ * nobody auditing the chain would know truncation happened.
+ *
+ * Fix: check the return value at every call site. Fail loudly (abort)
+ * rather than proceed with a truncated forensic hash — this is a case
+ * where "crash immediately" is strictly safer than "continue with
+ * corrupted evidence." */
+static int snprintf_checked(char *buf, size_t bufsize, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(buf, bufsize, fmt, args);
+    va_end(args);
+    if (n < 0 || (size_t)n >= bufsize) {
+        fprintf(stderr,
+                "FATAL: content string truncated or encoding error "
+                "(would-be length=%d, buffer size=%zu) — refusing to hash "
+                "truncated forensic content.\n", n, bufsize);
+        abort();
+    }
+    return n;
+}
+
 /* ======================= Audit chain data model ======================= */
 
 #define MAX_EVENT_LEN 200
@@ -226,7 +256,7 @@ static int chain_append(AuditChain *chain, const char *event) {
 
     /* Canonical content string: index|timestamp|event|prev_hash */
     char content[MAX_EVENT_LEN + HASH_HEX_LEN + 64];
-    int n = snprintf(content, sizeof(content), "%llu|%llu|%s|%s",
+    int n = snprintf_checked(content, sizeof(content), "%llu|%llu|%s|%s",
                       (unsigned long long)e->index,
                       (unsigned long long)e->timestamp_ms,
                       e->event, e->prev_hash);
@@ -254,7 +284,7 @@ static int chain_verify(const AuditChain *chain) {
         }
 
         char content[MAX_EVENT_LEN + HASH_HEX_LEN + 64];
-        int n = snprintf(content, sizeof(content), "%llu|%llu|%s|%s",
+        int n = snprintf_checked(content, sizeof(content), "%llu|%llu|%s|%s",
                           (unsigned long long)e->index,
                           (unsigned long long)e->timestamp_ms,
                           e->event, e->prev_hash);
@@ -288,6 +318,141 @@ static void *writer_thread(void *arg) {
     return NULL;
 }
 
+/* ======================= Attack / tamper demo ======================= */
+/*
+ * Three auditors (independent reviews) converged on the same finding:
+ * we built the whole integrity apparatus and never actually attacked it.
+ * A hash chain that was never attacked is compiled, not proven.
+ *
+ * This section runs four tamper scenarios against a small chain and
+ * reports whether verify() catches each one:
+ *
+ *   1. NAIVE TAMPER    — modify one entry's event, leave its hash alone.
+ *                        Expected: verify() catches it AT that index
+ *                        (recomputed hash != stored hash).
+ *   2. REORDER         — swap two adjacent entries in place.
+ *                        Expected: verify() catches it (prev_hash link
+ *                        no longer matches).
+ *   3. DELETION        — remove one entry, shift the rest down.
+ *                        Expected: verify() catches it (prev_hash link
+ *                        broken at the seam).
+ *   4. CASCADE FORGERY — modify one entry's event AND recompute that
+ *                        entry's hash AND recompute every entry after it
+ *                        so the whole chain is internally consistent
+ *                        again. Expected: verify() DOES NOT catch it.
+ *
+ * Scenario 4 is the important one. A pure hash chain, on its own, proves
+ * "nothing changed after I looked at the final hash" — it does NOT
+ * prove "nothing changed, period," if the attacker has full write access
+ * to the log AND knows the hash function (which is public). Full
+ * cascade forgery is always possible against a bare hash chain. Real
+ * tamper-evidence needs an external anchor: a hash published/signed
+ * somewhere the attacker cannot also rewrite (offline signature, a
+ * separate append-only transparency log, RFC3161 timestamping, HMAC
+ * with a key never available to whoever can edit the log file). This
+ * is the exact same limitation VIGIA's own KNOWN_LIMITATIONS.md
+ * documents for generate_forensic_hash: the hash proves the content
+ * didn't change since it was sealed, not that it was legitimate before
+ * that, and not that a full-access attacker cannot reseal a forged
+ * version end to end.
+ */
+
+static AuditChain *build_small_chain(int n) {
+    AuditChain *c = malloc(sizeof(AuditChain));
+    chain_init(c, 32);
+    char event[64];
+    for (int i = 0; i < n; ++i) {
+        snprintf(event, sizeof(event), "genuine_event_%d", i);
+        chain_append(c, event);
+    }
+    return c;
+}
+
+/* Recompute one entry's hash from its (possibly tampered) fields. */
+static void recompute_entry_hash(AuditEntry *e) {
+    char content[MAX_EVENT_LEN + HASH_HEX_LEN + 64];
+    int n = snprintf_checked(content, sizeof(content), "%llu|%llu|%s|%s",
+                      (unsigned long long)e->index,
+                      (unsigned long long)e->timestamp_ms,
+                      e->event, e->prev_hash);
+    sha256_hex(content, (size_t)n, e->hash);
+}
+
+static void run_attack_demo(void) {
+    printf("\n=== C: tamper / attack demo ===\n");
+
+    /* --- Scenario 1: naive tamper --- */
+    {
+        AuditChain *c = build_small_chain(10);
+        strcpy(c->entries[3].event, "TAMPERED_EVENT_no_hash_fix");
+        int ok = chain_verify(c);
+        printf("[1] Naive tamper (event changed, hash left alone):     "
+               "verify()=%s  (expected: false)\n", ok ? "true" : "false");
+        chain_free(c);
+        free(c);
+    }
+
+    /* --- Scenario 2: reorder --- */
+    {
+        AuditChain *c = build_small_chain(10);
+        AuditEntry tmp = c->entries[3];
+        c->entries[3] = c->entries[4];
+        c->entries[4] = tmp;
+        int ok = chain_verify(c);
+        printf("[2] Reorder (swap entries 3 and 4 in place):           "
+               "verify()=%s  (expected: false)\n", ok ? "true" : "false");
+        chain_free(c);
+        free(c);
+    }
+
+    /* --- Scenario 3: deletion --- */
+    {
+        AuditChain *c = build_small_chain(10);
+        for (size_t i = 3; i < c->count - 1; ++i) {
+            c->entries[i] = c->entries[i + 1];
+        }
+        c->count -= 1;
+        int ok = chain_verify(c);
+        printf("[3] Deletion (remove entry 3, shift rest down):        "
+               "verify()=%s  (expected: false)\n", ok ? "true" : "false");
+        chain_free(c);
+        free(c);
+    }
+
+    /* --- Scenario 4: full cascade forgery --- */
+    {
+        AuditChain *c = build_small_chain(10);
+        strcpy(c->entries[3].event, "FORGED_EVENT_fully_recomputed");
+        /* Attacker knows the hash function (it's public) and has full
+         * write access to the log file. They recompute entry 3's hash,
+         * then propagate the new hash into entry 4's prev_hash, and so
+         * on to the end — exactly what a legitimate append would have
+         * produced, just with different content. */
+        recompute_entry_hash(&c->entries[3]);
+        for (size_t i = 4; i < c->count; ++i) {
+            memcpy(c->entries[i].prev_hash, c->entries[i - 1].hash, HASH_HEX_LEN + 1);
+            recompute_entry_hash(&c->entries[i]);
+        }
+        int ok = chain_verify(c);
+        printf("[4] Cascade forgery (tamper + recompute forward):      "
+               "verify()=%s  (expected: TRUE — this is the limitation)\n",
+               ok ? "true" : "false");
+        chain_free(c);
+        free(c);
+    }
+
+    printf("\nConclusion: a bare hash chain proves \"nothing changed after\n"
+           "the fact I'm holding\" — it does NOT prove \"nothing changed,\n"
+           "period,\" against an attacker with full write access who knows\n"
+           "the (public) hash function. Scenarios 1-3 are caught because\n"
+           "they're PARTIAL edits. Scenario 4 is not caught because a\n"
+           "consistent chain can always be re-derived from the tamper\n"
+           "point forward. Real integrity requires an external anchor\n"
+           "the attacker cannot also rewrite: an offline signature, a\n"
+           "separate transparency log, RFC3161 timestamping, or an HMAC\n"
+           "key that never lives on the same machine as the editable log.\n");
+}
+
 /* ======================= Benchmark + main ======================= */
 
 static double elapsed_seconds(struct timespec start, struct timespec end) {
@@ -295,6 +460,11 @@ static double elapsed_seconds(struct timespec start, struct timespec end) {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "attack") == 0) {
+        run_attack_demo();
+        return 0;
+    }
+
     long n_entries = (argc > 1) ? atol(argv[1]) : 100000;
     int n_threads  = (argc > 2) ? atoi(argv[2]) : 4;
 

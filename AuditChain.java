@@ -137,7 +137,123 @@ public class AuditChain {
 
     // ======================= Benchmark + main =======================
 
-    public static void main(String[] args) throws InterruptedException {
+    /**
+     * Three independent reviews of this project converged on the same
+     * finding: we built the whole integrity apparatus and never attacked
+     * it. This runs four tamper scenarios and reports whether verify()
+     * catches each — including scenario 4, which it should NOT catch:
+     * a full cascade forgery. See the C version's comment for the full
+     * explanation of why that is a fundamental limitation of bare hash
+     * chains, not a bug in any one implementation.
+     *
+     * Java's Entry is declared with `final` fields, which normally means
+     * immutable — but reflection can bypass that, and that is exactly
+     * what this demo does, deliberately, to simulate an attacker with
+     * full write access to the underlying data structure (equivalent to
+     * an attacker with filesystem access rewriting a persisted log).
+     */
+    private static void runAttackDemo() throws Exception {
+        System.out.println("\n=== Java: tamper / attack demo ===");
+
+        java.lang.reflect.Field eventField = Entry.class.getDeclaredField("event");
+        eventField.setAccessible(true);
+        java.lang.reflect.Field hashField = Entry.class.getDeclaredField("hash");
+        hashField.setAccessible(true);
+        java.lang.reflect.Field prevHashField = Entry.class.getDeclaredField("prevHash");
+        prevHashField.setAccessible(true);
+
+        // --- Scenario 1: naive tamper ---
+        {
+            AuditChain c = buildSmallChain(10);
+            eventField.set(c.entries.get(3), "TAMPERED_EVENT_no_hash_fix");
+            boolean ok = c.verify();
+            System.out.printf(
+                "[1] Naive tamper (event changed, hash left alone):     verify()=%b  (expected: false)%n",
+                ok);
+        }
+
+        // --- Scenario 2: reorder ---
+        {
+            AuditChain c = buildSmallChain(10);
+            Entry tmp = c.entries.get(3);
+            c.entries.set(3, c.entries.get(4));
+            c.entries.set(4, tmp);
+            boolean ok = c.verify();
+            System.out.printf(
+                "[2] Reorder (swap entries 3 and 4 in place):           verify()=%b  (expected: false)%n",
+                ok);
+        }
+
+        // --- Scenario 3: deletion ---
+        {
+            AuditChain c = buildSmallChain(10);
+            c.entries.remove(3);
+            boolean ok = c.verify();
+            System.out.printf(
+                "[3] Deletion (remove entry 3, shift rest down):        verify()=%b  (expected: false)%n",
+                ok);
+        }
+
+        // --- Scenario 4: full cascade forgery ---
+        {
+            AuditChain c = buildSmallChain(10);
+            Entry e3 = c.entries.get(3);
+            eventField.set(e3, "FORGED_EVENT_fully_recomputed");
+            String newHash3 = sha256Hex(e3.index + "|" + e3.timestampMs + "|" + e3.event + "|" + e3.prevHash);
+            hashField.set(e3, newHash3);
+            String prevHash = newHash3;
+            for (int i = 4; i < c.entries.size(); i++) {
+                Entry e = c.entries.get(i);
+                prevHashField.set(e, prevHash);
+                String newHash = sha256Hex(e.index + "|" + e.timestampMs + "|" + e.event + "|" + prevHash);
+                hashField.set(e, newHash);
+                prevHash = newHash;
+            }
+            boolean ok = c.verify();
+            System.out.printf(
+                "[4] Cascade forgery (tamper + recompute forward):      verify()=%b  (expected: TRUE — this is the limitation)%n",
+                ok);
+        }
+
+        System.out.println(
+            "\nConclusion: a bare hash chain proves \"nothing changed after\n" +
+            "the fact I'm holding\" — it does NOT prove \"nothing changed,\n" +
+            "period,\" against an attacker with full write access who knows\n" +
+            "the (public) hash function. Scenarios 1-3 are caught because\n" +
+            "they're PARTIAL edits. Scenario 4 is not caught because a\n" +
+            "consistent chain can always be re-derived from the tamper\n" +
+            "point forward. Real integrity requires an external anchor the\n" +
+            "attacker cannot also rewrite: an offline signature, a separate\n" +
+            "transparency log, RFC3161 timestamping, or an HMAC key that\n" +
+            "never lives on the same machine as the editable log.\n" +
+            "\n" +
+            "Note: this demo used reflection to bypass `final` on Entry's\n" +
+            "fields — a reminder that Java's immutability is a compile-time\n" +
+            "convention, not a hard guarantee, against a JVM-resident\n" +
+            "attacker with reflection access."
+        );
+    }
+
+    private static AuditChain buildSmallChain(int n) {
+        AuditChain c = new AuditChain();
+        for (int i = 0; i < n; i++) {
+            c.append("genuine_event_" + i);
+        }
+        return c;
+    }
+
+    public static void main(String[] args) throws Exception {
+        // Force UTF-8 stdout regardless of platform default charset — the
+        // attack demo's conclusion text uses em-dashes, and a JVM running
+        // with a non-UTF-8 default (common outside en_US.UTF-8 locales)
+        // would otherwise mangle them into '?'.
+        System.setOut(new java.io.PrintStream(System.out, true, "UTF-8"));
+
+        if (args.length > 0 && args[0].equals("attack")) {
+            runAttackDemo();
+            return;
+        }
+
         long nEntries = args.length > 0 ? Long.parseLong(args[0]) : 200_000L;
         int nThreads = args.length > 1 ? Integer.parseInt(args[1]) : 4;
 
