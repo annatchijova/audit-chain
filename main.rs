@@ -1,0 +1,210 @@
+//! audit_chain — Tamper-evident hash-chain audit log (Rust version)
+//!
+//! Same spec as the C and Java versions:
+//!   Entry = { index, timestamp_ms, event, prev_hash, hash }
+//!   hash  = SHA256(index | timestamp_ms | event | prev_hash)
+//!   Chain is valid iff every entry's prev_hash matches the previous
+//!   entry's hash, and every entry's hash matches its own recomputed hash.
+//!
+//! Where the C version manages memory manually (malloc/realloc/free,
+//! fixed-size buffers with explicit bounds checks), this version leans on
+//! ownership: `Vec<AuditEntry>` grows safely, `String` cannot overflow a
+//! fixed buffer, and the borrow checker enforces at compile time that only
+//! one thread can mutate the chain at a time — the same invariant C enforces
+//! at runtime with a pthread_mutex_t, except here it's a compile error to
+//! get it wrong, not a race condition to debug.
+//!
+//! Build:  cargo build --release
+//! Run:    ./target/release/audit_chain [n_entries] [n_threads]
+
+use sha2::{Digest, Sha256};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+const GENESIS_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000000";
+
+#[derive(Clone, Debug)]
+struct AuditEntry {
+    index: u64,
+    timestamp_ms: u64,
+    event: String,
+    prev_hash: String,
+    hash: String,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before UNIX epoch")
+        .as_millis() as u64
+}
+
+fn sha256_hex(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    let digest = hasher.finalize();
+    // Rust has no unsafe pointer arithmetic here — `format!` cannot
+    // overflow a buffer the way a miscalculated snprintf destination can.
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// The audit chain itself. No manual capacity management: `Vec::push`
+/// handles growth; there is no realloc failure path to get wrong because
+/// Rust aborts cleanly on allocation failure rather than returning a null
+/// pointer you might forget to check.
+struct AuditChain {
+    entries: Vec<AuditEntry>,
+    last_hash: String,
+}
+
+impl AuditChain {
+    fn new() -> Self {
+        AuditChain {
+            entries: Vec::with_capacity(1024),
+            last_hash: GENESIS_HASH[..64].to_string(),
+        }
+    }
+
+    /// Append one entry. Takes `&mut self` — the borrow checker guarantees
+    /// at compile time that no other reference to this chain exists while
+    /// this call is in progress, in a single-threaded context. For the
+    /// concurrent case below, that guarantee is upgraded to a runtime lock
+    /// via `Mutex`, but the *shape* of the safety is the same idea taken
+    /// further: exclusive access, enforced structurally.
+    fn append(&mut self, event: &str) {
+        let index = self.entries.len() as u64;
+        let timestamp_ms = now_ms();
+        let prev_hash = self.last_hash.clone();
+
+        let content = format!("{}|{}|{}|{}", index, timestamp_ms, event, prev_hash);
+        let hash = sha256_hex(&content);
+
+        self.last_hash = hash.clone();
+        self.entries.push(AuditEntry {
+            index,
+            timestamp_ms,
+            event: event.to_string(),
+            prev_hash,
+            hash,
+        });
+    }
+
+    /// Verify the full chain: recompute every hash, confirm linkage.
+    /// Takes `&self` (shared, read-only borrow) — the type system documents
+    /// that verification cannot mutate the chain, which is not something
+    /// the C signature `int chain_verify(const AuditChain *chain)` enforces
+    /// beyond a `const` that a careless cast could discard.
+    fn verify(&self) -> bool {
+        let mut expected_prev = GENESIS_HASH[..64].to_string();
+
+        for e in &self.entries {
+            if e.prev_hash != expected_prev {
+                eprintln!("CHAIN BROKEN at index {}: prev_hash mismatch", e.index);
+                return false;
+            }
+
+            let content = format!(
+                "{}|{}|{}|{}",
+                e.index, e.timestamp_ms, e.event, e.prev_hash
+            );
+            let recomputed = sha256_hex(&content);
+
+            if recomputed != e.hash {
+                eprintln!("CHAIN BROKEN at index {}: hash tampered", e.index);
+                return false;
+            }
+            expected_prev = e.hash.clone();
+        }
+        true
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let n_entries: u64 = args
+        .get(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200_000);
+    let n_threads: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
+
+    println!("=== Rust audit chain benchmark ===");
+    println!("entries={} threads={}\n", n_entries, n_threads);
+
+    // --- Single-threaded sequential benchmark ---
+    let mut chain = AuditChain::new();
+
+    let t0 = Instant::now();
+    for i in 0..n_entries {
+        chain.append(&format!("sequential_write_{}", i));
+    }
+    let write_secs = t0.elapsed().as_secs_f64();
+    println!(
+        "Sequential write: {:.4} s  ({:.0} entries/sec)",
+        write_secs,
+        n_entries as f64 / write_secs
+    );
+
+    let t0 = Instant::now();
+    let valid = chain.verify();
+    let verify_secs = t0.elapsed().as_secs_f64();
+    println!(
+        "Verify:           {:.4} s  ({:.0} entries/sec)  chain_valid={}",
+        verify_secs,
+        n_entries as f64 / verify_secs,
+        valid
+    );
+
+    // --- Concurrent writer benchmark ---
+    // Arc<Mutex<AuditChain>>: shared ownership across threads (Arc) plus
+    // exclusive-access-on-write (Mutex). The compiler will not let this
+    // code build if a thread tries to touch `chain` without going through
+    // the lock — there is no way to "forget" the mutex the way a C
+    // function can forget to call pthread_mutex_lock before touching
+    // shared state. Fearless concurrency: the fear is moved from runtime
+    // debugging to compile-time rejection.
+    println!("\n--- Concurrent writers ({} threads) ---", n_threads);
+    let cchain = Arc::new(Mutex::new(AuditChain::new()));
+    let entries_per_thread = n_entries / n_threads as u64;
+
+    let t0 = Instant::now();
+    let mut handles = Vec::new();
+    for tid in 0..n_threads {
+        let chain_ref = Arc::clone(&cchain);
+        let handle = thread::spawn(move || {
+            for i in 0..entries_per_thread {
+                let event = format!("thread_{}_write_{}", tid, i);
+                // Lock scope is minimal: acquire, append, drop before the
+                // next loop iteration's format! runs — the lock guard's
+                // Drop impl releases it automatically, no unlock() to forget.
+                let mut c = chain_ref.lock().expect("mutex poisoned");
+                c.append(&event);
+            }
+        });
+        handles.push(handle);
+    }
+    for handle in handles {
+        handle.join().expect("writer thread panicked");
+    }
+    let cwrite_secs = t0.elapsed().as_secs_f64();
+    let total_written = entries_per_thread * n_threads as u64;
+    println!(
+        "Concurrent write: {:.4} s  ({:.0} entries/sec)  total={}",
+        cwrite_secs,
+        total_written as f64 / cwrite_secs,
+        total_written
+    );
+
+    let cchain_locked = cchain.lock().expect("mutex poisoned");
+    let cvalid = cchain_locked.verify();
+    println!(
+        "Chain valid after concurrent writes: {} (count={})",
+        cvalid,
+        cchain_locked.len()
+    );
+}

@@ -1,0 +1,10 @@
+[package]
+name = "audit_chain"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sha2 = "0.10"
+
+[profile.release]
+opt-level = 3
