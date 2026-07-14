@@ -51,12 +51,21 @@ fn now_ms() -> u64 {
 }
 
 fn sha256_hex(content: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
     let digest = hasher.finalize();
-    // Rust has no unsafe pointer arithmetic here — `format!` cannot
-    // overflow a buffer the way a miscalculated snprintf destination can.
-    digest.iter().map(|b| format!("{:02x}", b)).collect()
+    // Lookup table instead of format!("{:02x}", b) per byte: that pattern
+    // allocates one String per byte (32 allocations per hash call), which
+    // is the dominant throughput bottleneck under concurrent write load.
+    // With_capacity(64) makes one allocation; the lookup table avoids
+    // format-string parsing entirely.
+    let mut out = String::with_capacity(64);
+    for b in digest.iter() {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0F) as usize] as char);
+    }
+    out
 }
 
 /// The audit chain itself. No manual capacity management: `Vec::push`

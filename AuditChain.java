@@ -260,11 +260,12 @@ public class AuditChain {
         int pass = 0, fail = 0;
 
         java.lang.reflect.Field efld = Entry.class.getDeclaredField("event");
-        efld.setAccessible(true);
         java.lang.reflect.Field hfld = Entry.class.getDeclaredField("hash");
-        hfld.setAccessible(true);
         java.lang.reflect.Field phfld = Entry.class.getDeclaredField("prevHash");
+        efld.setAccessible(true);
+        hfld.setAccessible(true);
         phfld.setAccessible(true);
+        try {
 
         // INV-1: a well-formed chain always verifies.
         {
@@ -339,7 +340,12 @@ public class AuditChain {
             if (ok) pass++; else fail++;
         }
 
-        System.out.printf("%nInvariant tests: %d passed, %d failed.%n", pass, fail);
+            System.out.printf("%nInvariant tests: %d passed, %d failed.%n", pass, fail);
+        } finally {
+            efld.setAccessible(false);
+            hfld.setAccessible(false);
+            phfld.setAccessible(false);
+        }
     }
 
     public static void main(String[] args) throws Exception {
