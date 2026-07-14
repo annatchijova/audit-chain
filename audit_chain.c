@@ -453,6 +453,106 @@ static void run_attack_demo(void) {
            "key that never lives on the same machine as the editable log.\n");
 }
 
+/* ======================= Formal invariant tests ======================= */
+/*
+ * Six formal properties of a correct hash chain, expressed as runnable
+ * checks. Run with:  ./audit_chain invariants
+ *
+ * INV-1 (soundness)   : a well-formed chain always verifies.
+ * INV-2 (mutation)    : mutating an entry's event field without updating its
+ *                       hash breaks verify().
+ * INV-3 (order)       : reordering entries breaks verify().
+ * INV-4 (idempotency) : verify() called twice returns the same result.
+ * INV-5 (derivation)  : entry[i].hash == SHA256(canonical(entry[i]) | entry[i-1].hash).
+ * INV-6 (limitation)  : a full cascade forgery passes verify() — expected
+ *                       behaviour, not a bug. Documents the boundary of what
+ *                       a bare hash chain without external anchoring promises.
+ */
+static int run_invariant_tests(void) {
+    int pass = 0, fail = 0;
+
+#define CHECK(label, cond) do { \
+    if (cond) { printf("[PASS] %s\n", (label)); pass++; } \
+    else       { printf("[FAIL] %s\n", (label)); fail++; } \
+} while (0)
+
+    printf("\n=== C: formal invariant tests ===\n");
+
+    /* INV-1: a well-formed chain always verifies. */
+    {
+        AuditChain *c = build_small_chain(3);
+        CHECK("INV-1  append(A,B,C) -> verify() == true", chain_verify(c));
+        chain_free(c); free(c);
+    }
+
+    /* INV-2: mutating an entry's event without updating its hash breaks the chain. */
+    {
+        AuditChain *c = build_small_chain(3);
+        strcpy(c->entries[1].event, "MUTATED");
+        CHECK("INV-2  mutate(B) -> verify() == false", !chain_verify(c));
+        chain_free(c); free(c);
+    }
+
+    /* INV-3: reordering entries breaks the chain. */
+    {
+        AuditChain *c = build_small_chain(3);
+        AuditEntry tmp = c->entries[0];
+        c->entries[0] = c->entries[1];
+        c->entries[1] = tmp;
+        CHECK("INV-3  reorder(A,B,C) -> verify() == false", !chain_verify(c));
+        chain_free(c); free(c);
+    }
+
+    /* INV-4: idempotency — verify() called twice returns the same result. */
+    {
+        AuditChain *c = build_small_chain(3);
+        int v1 = chain_verify(c);
+        int v2 = chain_verify(c);
+        CHECK("INV-4  verify() idempotent (same result twice)", v1 == v2);
+        chain_free(c); free(c);
+    }
+
+    /* INV-5: hash derivation — entry[1].hash is SHA256 of its own fields
+     * using entry[0].hash as prev_hash, independently recomputed here.
+     * Confirms the derivation chain: hash(B) = SHA256(payload(B) | hash(A)). */
+    {
+        AuditChain *c = build_small_chain(2);
+        AuditEntry *a = &c->entries[0];
+        AuditEntry *b = &c->entries[1];
+        char content[MAX_EVENT_LEN + HASH_HEX_LEN + 64];
+        int n = snprintf_checked(content, sizeof(content), "%llu|%llu|%s|%s",
+                          (unsigned long long)b->index,
+                          (unsigned long long)b->timestamp_ms,
+                          b->event, a->hash);
+        char recomputed[HASH_HEX_LEN + 1];
+        sha256_hex(content, (size_t)n, recomputed);
+        CHECK("INV-5  hash(B) == SHA256(payload(B) | hash(A))",
+              strcmp(recomputed, b->hash) == 0);
+        chain_free(c); free(c);
+    }
+
+    /* INV-6 (negative): a full cascade forgery passes verify() — expected
+     * property of any hash chain without external anchoring. verify() == true
+     * is the CORRECT result here; the check passes when it returns true. */
+    {
+        AuditChain *c = build_small_chain(5);
+        strcpy(c->entries[2].event, "FORGED_cascade");
+        recompute_entry_hash(&c->entries[2]);
+        for (size_t i = 3; i < c->count; ++i) {
+            memcpy(c->entries[i].prev_hash, c->entries[i-1].hash, HASH_HEX_LEN + 1);
+            recompute_entry_hash(&c->entries[i]);
+        }
+        CHECK("INV-6  cascade forgery -> verify() == true (expected limitation)",
+              chain_verify(c));
+        chain_free(c); free(c);
+    }
+
+#undef CHECK
+
+    printf("\nInvariant tests: %d passed, %d failed.\n", pass, fail);
+    return fail == 0 ? 0 : 1;
+}
+
 /* ======================= Benchmark + main ======================= */
 
 static double elapsed_seconds(struct timespec start, struct timespec end) {
@@ -463,6 +563,9 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "attack") == 0) {
         run_attack_demo();
         return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "invariants") == 0) {
+        return run_invariant_tests();
     }
 
     long n_entries = (argc > 1) ? atol(argv[1]) : 100000;

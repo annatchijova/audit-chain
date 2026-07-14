@@ -242,6 +242,106 @@ public class AuditChain {
         return c;
     }
 
+    /**
+     * Formal invariant suite. Run with:  java AuditChain invariants
+     *
+     * INV-1 (soundness)   : a well-formed chain always verifies.
+     * INV-2 (mutation)    : mutating an entry's event without updating its hash
+     *                       breaks verify().
+     * INV-3 (order)       : reordering entries breaks verify().
+     * INV-4 (idempotency) : calling verify() twice returns the same result.
+     * INV-5 (derivation)  : entry[i].hash == SHA256(canonical(entry[i]) | entry[i-1].hash).
+     * INV-6 (limitation)  : a full cascade forgery passes verify() — expected
+     *                       behavior, not a bug. Documents the boundary of what
+     *                       a bare hash chain without external anchoring promises.
+     */
+    private static void runInvariantTests() throws Exception {
+        System.out.println("\n=== Java: formal invariant tests ===");
+        int pass = 0, fail = 0;
+
+        java.lang.reflect.Field efld = Entry.class.getDeclaredField("event");
+        efld.setAccessible(true);
+        java.lang.reflect.Field hfld = Entry.class.getDeclaredField("hash");
+        hfld.setAccessible(true);
+        java.lang.reflect.Field phfld = Entry.class.getDeclaredField("prevHash");
+        phfld.setAccessible(true);
+
+        // INV-1: a well-formed chain always verifies.
+        {
+            AuditChain c = buildSmallChain(3);
+            boolean ok = c.verify();
+            System.out.printf("[%s] INV-1  append(A,B,C) -> verify() == true%n", ok ? "PASS" : "FAIL");
+            if (ok) pass++; else fail++;
+        }
+
+        // INV-2: mutating an entry's event without updating its hash breaks the chain.
+        {
+            AuditChain c = buildSmallChain(3);
+            efld.set(c.entries.get(1), "MUTATED");
+            boolean ok = !c.verify();
+            System.out.printf("[%s] INV-2  mutate(B) -> verify() == false%n", ok ? "PASS" : "FAIL");
+            if (ok) pass++; else fail++;
+        }
+
+        // INV-3: reordering entries breaks the chain.
+        {
+            AuditChain c = buildSmallChain(3);
+            Entry tmp = c.entries.get(0);
+            c.entries.set(0, c.entries.get(1));
+            c.entries.set(1, tmp);
+            boolean ok = !c.verify();
+            System.out.printf("[%s] INV-3  reorder(A,B,C) -> verify() == false%n", ok ? "PASS" : "FAIL");
+            if (ok) pass++; else fail++;
+        }
+
+        // INV-4: idempotency — verify() called twice returns the same result.
+        {
+            AuditChain c = buildSmallChain(3);
+            boolean v1 = c.verify();
+            boolean v2 = c.verify();
+            boolean ok = (v1 == v2);
+            System.out.printf("[%s] INV-4  verify() idempotent (same result twice)%n", ok ? "PASS" : "FAIL");
+            if (ok) pass++; else fail++;
+        }
+
+        // INV-5: hash derivation — entries.get(1).hash is SHA256 of its own
+        // fields using entries.get(0).hash as prev_hash, independently recomputed.
+        // Confirms: hash(B) = SHA256(payload(B) | hash(A)).
+        {
+            AuditChain c = buildSmallChain(2);
+            Entry a = c.entries.get(0);
+            Entry b = c.entries.get(1);
+            String expected = sha256Hex(b.index + "|" + b.timestampMs + "|" + b.event + "|" + a.hash);
+            boolean ok = expected.equals(b.hash);
+            System.out.printf("[%s] INV-5  hash(B) == SHA256(payload(B) | hash(A))%n", ok ? "PASS" : "FAIL");
+            if (ok) pass++; else fail++;
+        }
+
+        // INV-6 (negative): a full cascade forgery passes verify() — expected
+        // property of any hash chain without external anchoring. verify() == true
+        // is the CORRECT result; the check passes when it returns true.
+        {
+            AuditChain c = buildSmallChain(5);
+            Entry e2 = c.entries.get(2);
+            efld.set(e2, "FORGED_cascade");
+            String h2 = sha256Hex(e2.index + "|" + e2.timestampMs + "|" + e2.event + "|" + e2.prevHash);
+            hfld.set(e2, h2);
+            String prev = h2;
+            for (int i = 3; i < c.entries.size(); i++) {
+                Entry e = c.entries.get(i);
+                phfld.set(e, prev);
+                String h = sha256Hex(e.index + "|" + e.timestampMs + "|" + e.event + "|" + e.prevHash);
+                hfld.set(e, h);
+                prev = h;
+            }
+            boolean ok = c.verify();
+            System.out.printf("[%s] INV-6  cascade forgery -> verify() == true (expected limitation)%n", ok ? "PASS" : "FAIL");
+            if (ok) pass++; else fail++;
+        }
+
+        System.out.printf("%nInvariant tests: %d passed, %d failed.%n", pass, fail);
+    }
+
     public static void main(String[] args) throws Exception {
         // Force UTF-8 stdout regardless of platform default charset — the
         // attack demo's conclusion text uses em-dashes, and a JVM running
@@ -251,6 +351,10 @@ public class AuditChain {
 
         if (args.length > 0 && args[0].equals("attack")) {
             runAttackDemo();
+            return;
+        }
+        if (args.length > 0 && args[0].equals("invariants")) {
+            runInvariantTests();
             return;
         }
 

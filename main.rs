@@ -134,6 +134,21 @@ impl AuditChain {
     }
 }
 
+fn build_small_chain(n: u64) -> AuditChain {
+    let mut c = AuditChain::new();
+    for i in 0..n {
+        c.append(&format!("genuine_event_{}", i));
+    }
+    c
+}
+
+fn recompute_hash(e: &AuditEntry) -> String {
+    sha256_hex(&format!(
+        "{}|{}|{}|{}",
+        e.index, e.timestamp_ms, e.event, e.prev_hash
+    ))
+}
+
 /// Three independent reviews of this project converged on the same
 /// finding: we built the whole integrity apparatus and never attacked
 /// it. This runs four tamper scenarios and reports whether `verify()`
@@ -143,19 +158,6 @@ impl AuditChain {
 /// chains, not a bug in this implementation.
 fn run_attack_demo() {
     println!("\n=== Rust: tamper / attack demo ===");
-
-    fn build_small_chain(n: u64) -> AuditChain {
-        let mut c = AuditChain::new();
-        for i in 0..n {
-            c.append(&format!("genuine_event_{}", i));
-        }
-        c
-    }
-
-    fn recompute_hash(e: &AuditEntry) -> String {
-        let content = format!("{}|{}|{}|{}", e.index, e.timestamp_ms, e.event, e.prev_hash);
-        sha256_hex(&content)
-    }
 
     // --- Scenario 1: naive tamper ---
     {
@@ -224,11 +226,110 @@ fn run_attack_demo() {
     );
 }
 
+/// Formal invariant suite. Run with:  ./audit_chain invariants
+///
+/// INV-1 (soundness)   : a well-formed chain always verifies.
+/// INV-2 (mutation)    : mutating an entry's event without updating its hash
+///                       breaks verify().
+/// INV-3 (order)       : reordering entries breaks verify().
+/// INV-4 (idempotency) : verify() called twice returns the same result.
+/// INV-5 (derivation)  : entry[i].hash == SHA256(canonical(entry[i]) | entry[i-1].hash).
+/// INV-6 (limitation)  : a full cascade forgery passes verify() — expected
+///                       behavior, not a bug. Documents what a bare hash
+///                       chain without external anchoring actually promises.
+fn run_invariant_tests() {
+    println!("\n=== Rust: formal invariant tests ===");
+    let mut pass = 0u32;
+    let mut fail = 0u32;
+
+    macro_rules! check {
+        ($label:expr, $cond:expr) => {
+            if $cond {
+                println!("[PASS] {}", $label);
+                pass += 1;
+            } else {
+                println!("[FAIL] {}", $label);
+                fail += 1;
+            }
+        };
+    }
+
+    // INV-1: a well-formed chain always verifies.
+    {
+        let c = build_small_chain(3);
+        check!("INV-1  append(A,B,C) -> verify() == true", c.verify());
+    }
+
+    // INV-2: mutating an entry's event without updating its hash breaks the chain.
+    {
+        let mut c = build_small_chain(3);
+        c.entries[1].event = "MUTATED".to_string();
+        check!("INV-2  mutate(B) -> verify() == false", !c.verify());
+    }
+
+    // INV-3: reordering entries breaks the chain.
+    {
+        let mut c = build_small_chain(3);
+        c.entries.swap(0, 1);
+        check!("INV-3  reorder(A,B,C) -> verify() == false", !c.verify());
+    }
+
+    // INV-4: idempotency — verify() called twice returns the same result.
+    {
+        let c = build_small_chain(3);
+        let v1 = c.verify();
+        let v2 = c.verify();
+        check!("INV-4  verify() idempotent (same result twice)", v1 == v2);
+    }
+
+    // INV-5: hash derivation — entries[1].hash is SHA256 of its own fields
+    // with entries[0].hash as prev_hash, independently recomputed here.
+    // Confirms: hash(B) = SHA256(payload(B) | hash(A)).
+    {
+        let c = build_small_chain(2);
+        let a_hash = c.entries[0].hash.clone();
+        let b = &c.entries[1];
+        let expected = sha256_hex(&format!(
+            "{}|{}|{}|{}",
+            b.index, b.timestamp_ms, b.event, a_hash
+        ));
+        check!(
+            "INV-5  hash(B) == SHA256(payload(B) | hash(A))",
+            expected == b.hash
+        );
+    }
+
+    // INV-6 (negative): a full cascade forgery passes verify() — expected
+    // property of any hash chain without external anchoring. verify() == true
+    // is the CORRECT result; the check passes when it returns true.
+    {
+        let mut c = build_small_chain(5);
+        c.entries[2].event = "FORGED_cascade".to_string();
+        c.entries[2].hash = recompute_hash(&c.entries[2]);
+        for i in 3..c.entries.len() {
+            let prev = c.entries[i - 1].hash.clone();
+            c.entries[i].prev_hash = prev;
+            let new_hash = recompute_hash(&c.entries[i]);
+            c.entries[i].hash = new_hash;
+        }
+        check!(
+            "INV-6  cascade forgery -> verify() == true (expected limitation)",
+            c.verify()
+        );
+    }
+
+    println!("\nInvariant tests: {} passed, {} failed.", pass, fail);
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.get(1).map(|s| s.as_str()) == Some("attack") {
         run_attack_demo();
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("invariants") {
+        run_invariant_tests();
         return;
     }
 
