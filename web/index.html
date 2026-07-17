@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en" data-language="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Audit Chain: the same tamper-evident SHA-256 audit log implemented and attacked in C, Rust, and Java.">
+  <title>Audit Chain — A chain that admits its limit</title>
+  <style>
+    :root {
+      --coral: #C2746E;
+      --coral-light: #e5aaa1;
+      --ink: #1b1819;
+      --paper: #fff9f4;
+      --muted: #d9cac5;
+      --line: rgba(255, 249, 244, .2);
+      --panel: #2a2426;
+      --danger: #f09b78;
+      --safe: #a7d8bf;
+      --radius: 25px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; color: var(--paper); background: var(--coral); font: 16px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button { font: inherit; } a { color: inherit; }
+    .shell { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; padding: 25px 0; border-bottom: 1px solid var(--line); }
+    .brand { display: flex; align-items: center; gap: 10px; font-size: .8rem; font-weight: 900; letter-spacing: .12em; }
+    .chain-mark { display: flex; gap: 3px; } .chain-mark i { display: block; width: 9px; height: 9px; border: 2px solid var(--paper); border-radius: 50%; } .chain-mark i + i { margin-left: -5px; }
+    .language { display: flex; padding: 4px; border: 1px solid var(--line); border-radius: 100px; background: rgba(27,24,25,.25); }
+    .language button { padding: 7px 12px; border: 0; border-radius: 100px; color: var(--paper); background: transparent; cursor: pointer; font-size: .72rem; font-weight: 900; letter-spacing: .08em; } .language button[aria-pressed="true"] { color: var(--ink); background: var(--paper); }
+    .hero { padding: 105px 0 75px; }
+    .eyebrow { margin: 0 0 18px; color: #ffded7; font-size: .73rem; font-weight: 900; letter-spacing: .18em; text-transform: uppercase; }
+    h1 { max-width: 1050px; margin: 0; font-size: clamp(3.6rem, 8vw, 8rem); line-height: .88; letter-spacing: -.08em; } h1 em { color: #fce2dc; font-style: normal; }
+    .lede { max-width: 700px; margin: 31px 0 0; color: #ffece7; font-size: clamp(1.08rem, 2.2vw, 1.36rem); }
+    .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 35px; } .button { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 19px; border: 1px solid var(--paper); border-radius: 10px; color: var(--ink); background: var(--paper); text-decoration: none; font-weight: 850; } .button.alt { color: var(--paper); background: rgba(27,24,25,.2); }
+    .hero-facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 65px; } .fact { padding: 16px; border: 1px solid var(--line); border-radius: 15px; background: rgba(255,249,244,.06); } .fact strong { display: block; font-size: 1.45rem; line-height: 1; letter-spacing: -.04em; } .fact span { display: block; margin-top: 7px; color: #ffe0da; font-size: .78rem; }
+    section { padding: 86px 0; } .ink { background: var(--ink); } .paper { color: var(--ink); background: var(--paper); }
+    .heading { display: grid; grid-template-columns: .82fr 1.18fr; gap: 40px; margin-bottom: 37px; } h2 { margin: 0; font-size: clamp(2.2rem, 4.6vw, 4.3rem); line-height: .94; letter-spacing: -.07em; } .heading p { max-width: 640px; margin: 0; color: inherit; opacity: .75; font-size: 1.08rem; }
+    .spec { display: grid; grid-template-columns: .82fr 1.18fr; gap: 18px; } .formula { padding: 31px; border-radius: var(--radius); color: var(--paper); background: #342d30; } .formula code { display: block; color: var(--coral-light); font: 1rem/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; } .formula p { margin: 25px 0 0; color: #d7c8c5; }
+    .entry { overflow: hidden; border: 1px solid rgba(27,24,25,.13); border-radius: var(--radius); } .entry-row { display: grid; grid-template-columns: 78px 1fr auto; gap: 18px; align-items: center; padding: 18px 22px; border-bottom: 1px solid rgba(27,24,25,.12); } .entry-row:last-child { border: 0; } .entry-row .index { color: var(--coral); font-weight: 900; } .entry-row code { color: #5e5658; font-size: .77rem; } .entry-row b { padding: 5px 8px; border-radius: 100px; color: #3c5d4e; background: var(--safe); font-size: .65rem; letter-spacing: .08em; }
+    .languages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; } .language-card { min-height: 270px; padding: 27px; border: 1px solid var(--line); border-radius: var(--radius); background: #272224; } .language-card .tag { color: var(--coral-light); font-size: .76rem; font-weight: 900; letter-spacing: .13em; } .language-card h3 { margin: 42px 0 10px; font-size: 2rem; line-height: 1; letter-spacing: -.05em; } .language-card p { margin: 0; color: var(--muted); font-size: .93rem; } .language-card code { display: inline-block; margin-top: 23px; padding: 5px 8px; border: 1px solid rgba(255,249,244,.17); border-radius: 7px; color: #eee0dd; font-size: .74rem; }
+    .attack-grid { display: grid; grid-template-columns: 1fr .88fr; gap: 18px; } .attack-panel { padding: 29px; border-radius: var(--radius); background: #f1dfd9; } .attack-panel h3 { margin: 0 0 9px; font-size: 1.7rem; line-height: 1; } .attack-panel > p { margin: 0 0 22px; color: #5b5051; } .attack-buttons { display: flex; flex-wrap: wrap; gap: 8px; } .attack-buttons button { padding: 9px 12px; border: 1px solid rgba(27,24,25,.2); border-radius: 100px; color: var(--ink); background: transparent; cursor: pointer; font-size: .78rem; font-weight: 800; } .attack-buttons button[aria-selected="true"] { color: var(--paper); border-color: var(--coral); background: var(--coral); }
+    .result { display: flex; flex-direction: column; justify-content: space-between; min-height: 325px; padding: 29px; border-radius: var(--radius); color: var(--paper); background: var(--coral); } .result .label { color: #ffe5df; font-size: .72rem; font-weight: 900; letter-spacing: .13em; } .result strong { display: block; margin-top: 20px; font-size: clamp(3.3rem, 6vw, 5.5rem); line-height: .85; letter-spacing: -.09em; } .result p { margin: 20px 0 0; color: #ffece8; }
+    .limit { display: grid; grid-template-columns: .9fr 1.1fr; gap: 18px; } .limit-statement { padding: 32px; border-radius: var(--radius); color: var(--paper); background: var(--coral); } .limit-statement h3 { margin: 0; font-size: clamp(2.1rem, 3.5vw, 3.4rem); line-height: .92; letter-spacing: -.06em; } .limit-statement p { margin: 22px 0 0; color: #ffe8e2; } .anchors { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; } .anchor { padding: 20px; border: 1px solid rgba(27,24,25,.14); border-radius: 16px; background: #f4e9e2; } .anchor b { color: var(--coral); font-size: .72rem; letter-spacing: .1em; } .anchor p { margin: 9px 0 0; color: #51494b; font-size: .9rem; }
+    .invariants { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; } .invariant { padding: 21px; border: 1px solid var(--line); border-radius: 17px; background: rgba(255,249,244,.045); } .invariant b { color: var(--coral-light); font-size: .76rem; letter-spacing: .1em; } .invariant p { margin: 11px 0 0; color: var(--muted); font-size: .91rem; } .invariant.negative { border-color: rgba(240,155,120,.55); background: rgba(194,116,110,.12); } .invariant.negative b { color: var(--danger); }
+    footer { padding: 33px 0 45px; font-size: .82rem; color: rgba(255,249,244,.78); } .footer-line { display: flex; justify-content: space-between; gap: 20px; padding-top: 23px; border-top: 1px solid var(--line); }
+    @media (max-width: 820px) { .hero { padding-top: 75px; } .hero-facts, .languages { grid-template-columns: repeat(2, 1fr); } .heading, .spec, .attack-grid, .limit { grid-template-columns: 1fr; } .invariants { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 520px) { .shell { width: min(100% - 28px, 1180px); } .hero-facts, .languages, .invariants, .anchors { grid-template-columns: 1fr; } .entry-row { grid-template-columns: 54px 1fr; gap: 10px; } .entry-row b { grid-column: 2; justify-self: start; } .footer-line { display: block; } .footer-line span + span { display: block; margin-top: 8px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand"><span class="chain-mark"><i></i><i></i><i></i></span> AUDIT CHAIN</div>
+        <div class="language" aria-label="Language selector"><button type="button" data-language="en" aria-pressed="true">EN</button><button type="button" data-language="es" aria-pressed="false">ES</button></div>
+      </header>
+      <section class="hero">
+        <p class="eyebrow" data-en="SAME SPECIFICATION · THREE LANGUAGES · FOUR ATTACKS" data-es="MISMA ESPECIFICACIÓN · TRES LENGUAJES · CUATRO ATAQUES">SAME SPECIFICATION · THREE LANGUAGES · FOUR ATTACKS</p>
+        <h1 data-en="A chain that <em>admits its limit.</em>" data-es="Una cadena que <em>admite su límite.</em>">A chain that <em>admits its limit.</em></h1>
+        <p class="lede" data-en="The exact same append-only SHA-256 audit chain, built in C, Rust, and Java — then deliberately attacked to show what a hash chain catches, and what it cannot prove alone." data-es="La misma cadena de auditoría SHA-256 append-only, construida en C, Rust y Java — y luego atacada deliberadamente para mostrar qué detecta una cadena de hashes y qué no puede probar por sí sola.">The exact same append-only SHA-256 audit chain, built in C, Rust, and Java — then deliberately attacked to show what a hash chain catches, and what it cannot prove alone.</p>
+        <div class="cta"><a class="button" href="#attack" data-en="Watch the attacks" data-es="Ver los ataques">Watch the attacks</a><a class="button alt" href="#limit" data-en="Read the limit" data-es="Leer el límite">Read the limit</a></div>
+        <div class="hero-facts">
+          <article class="fact"><strong>3</strong><span data-en="C · Rust · Java" data-es="C · Rust · Java">C · Rust · Java</span></article>
+          <article class="fact"><strong>SHA-256</strong><span data-en="linked entries" data-es="entradas enlazadas">linked entries</span></article>
+          <article class="fact"><strong>4</strong><span data-en="attack scenarios" data-es="escenarios de ataque">attack scenarios</span></article>
+          <article class="fact"><strong>6</strong><span data-en="executable invariants" data-es="invariantes ejecutables">executable invariants</span></article>
+        </div>
+      </section>
+    </div>
+
+    <section class="paper"><div class="shell">
+      <div class="heading"><h2 data-en="The contract is deliberately small." data-es="El contrato es deliberadamente pequeño.">The contract is deliberately small.</h2><p data-en="An entry carries its position, time, event, the prior hash, and its own hash. Verification recomputes every link. There is no mystery layer: the point is a precise, inspectable integrity contract." data-es="Una entrada lleva su posición, tiempo, evento, hash previo y hash propio. La verificación recompone cada enlace. No hay una capa misteriosa: el punto es un contrato de integridad preciso e inspeccionable.">An entry carries its position, time, event, the prior hash, and its own hash. Verification recomputes every link. There is no mystery layer: the point is a precise, inspectable integrity contract.</p></div>
+      <div class="spec">
+        <article class="formula"><code>Entry = { index, timestamp_ms,
+event, prev_hash, hash }
+
+hash = SHA256(index | timestamp_ms |
+              event | prev_hash)
+
+valid = every previous link matches
+        AND every hash recomputes</code><p data-en="The event order is part of the evidence. Change an entry, delete it, or move it without repairing every consequence — verification fails." data-es="El orden de eventos es parte de la evidencia. Cambiá una entrada, borrala o movela sin reparar cada consecuencia — la verificación falla.">The event order is part of the evidence. Change an entry, delete it, or move it without repairing every consequence — verification fails.</p></article>
+        <article class="entry" aria-label="Illustrative audit entries"><div class="entry-row"><span class="index">#001</span><code>event: LOGIN_ACCEPTED</code><b data-en="LINKED" data-es="ENLAZADA">LINKED</b></div><div class="entry-row"><span class="index">#002</span><code>event: POLICY_CHANGED</code><b data-en="LINKED" data-es="ENLAZADA">LINKED</b></div><div class="entry-row"><span class="index">#003</span><code>event: ACCESS_REVOKED</code><b data-en="LINKED" data-es="ENLAZADA">LINKED</b></div><div class="entry-row"><span class="index">#004</span><code>prev_hash → #003.hash</code><b data-en="VERIFIABLE" data-es="VERIFICABLE">VERIFIABLE</b></div></article>
+      </div>
+    </div></section>
+
+    <section class="ink"><div class="shell">
+      <div class="heading"><h2 data-en="Same rules. Different trade-offs." data-es="Mismas reglas. Distintos compromisos.">Same rules. Different trade-offs.</h2><p data-en="This is not a benchmark that compares unrelated programs. The specification and attacks stay fixed; the implementation reveals how C, Rust, and Java make memory management, concurrency, and performance visible in different ways." data-es="No es un benchmark que compara programas no relacionados. La especificación y los ataques se mantienen fijos; la implementación revela cómo C, Rust y Java hacen visibles de maneras distintas la memoria, la concurrencia y el rendimiento.">This is not a benchmark that compares unrelated programs. The specification and attacks stay fixed; the implementation reveals how C, Rust, and Java make memory management, concurrency, and performance visible in different ways.</p></div>
+      <div class="languages">
+        <article class="language-card"><span class="tag">01 / C</span><h3 data-en="Manual means explicit." data-es="Manual significa explícito.">Manual means explicit.</h3><p data-en="Own SHA-256, manual memory, and pthreads. The project checks truncation instead of silently hashing cut-off evidence." data-es="SHA-256 propio, memoria manual y pthreads. El proyecto verifica truncamiento en vez de hashear evidencia cortada en silencio.">Own SHA-256, manual memory, and pthreads. The project checks truncation instead of silently hashing cut-off evidence.</p><code>pthread_mutex_t</code></article>
+        <article class="language-card"><span class="tag">02 / RUST</span><h3 data-en="The lock is in the type." data-es="El lock está en el tipo.">The lock is in the type.</h3><p data-en="Vec and String reduce manual memory work; Arc&lt;Mutex&lt;…&gt;&gt; makes unsynchronized access fail at compile time." data-es="Vec y String reducen el trabajo manual de memoria; Arc&lt;Mutex&lt;…&gt;&gt; hace fallar acceso no sincronizado en compilación.">Vec and String reduce manual memory work; Arc&lt;Mutex&lt;…&gt;&gt; makes unsynchronized access fail at compile time.</p><code>Arc&lt;Mutex&lt;…&gt;&gt;</code></article>
+        <article class="language-card"><span class="tag">03 / JAVA</span><h3 data-en="Warmup is a result." data-es="El warmup es un resultado.">Warmup is a result.</h3><p data-en="MessageDigest and synchronized simplify the implementation, while JIT warmup is measured rather than hidden from the comparison." data-es="MessageDigest y synchronized simplifican la implementación, mientras el warmup del JIT se mide en vez de ocultarse en la comparación.">MessageDigest and synchronized simplify the implementation, while JIT warmup is measured rather than hidden from the comparison.</p><code>synchronized</code></article>
+      </div>
+    </div></section>
+
+    <section id="attack" class="paper"><div class="shell">
+      <div class="heading"><h2 data-en="A log that was never attacked is merely compiled." data-es="Un log que nunca fue atacado sólo está compilado.">A log that was never attacked is merely compiled.</h2><p data-en="The four modes below run against a ten-entry chain in all three implementations. The surprising result is not that careless tampering fails. It is that a full cascading rewrite passes — and that is the correct result for an unanchored hash chain." data-es="Los cuatro modos corren contra una cadena de diez entradas en las tres implementaciones. El resultado sorprendente no es que falle el tamper descuidado. Es que un reescrito completo en cascada pasa —y ése es el resultado correcto para una cadena de hashes sin ancla.">The four modes below run against a ten-entry chain in all three implementations. The surprising result is not that careless tampering fails. It is that a full cascading rewrite passes — and that is the correct result for an unanchored hash chain.</p></div>
+      <div class="attack-grid"><article class="attack-panel"><h3 data-en="Choose an attack" data-es="Elegí un ataque">Choose an attack</h3><p data-en="The output is an explanation of the tested behavior, not a simulated live system." data-es="La salida es una explicación del comportamiento probado, no un sistema en vivo simulado.">The output is an explanation of the tested behavior, not a simulated live system.</p><div class="attack-buttons" role="tablist"><button type="button" data-attack="mutate" aria-selected="true" data-en="Mutate one event" data-es="Mutar un evento">Mutate one event</button><button type="button" data-attack="reorder" aria-selected="false" data-en="Reorder entries" data-es="Reordenar entradas">Reorder entries</button><button type="button" data-attack="delete" aria-selected="false" data-en="Delete an entry" data-es="Borrar una entrada">Delete an entry</button><button type="button" data-attack="cascade" aria-selected="false" data-en="Cascade forgery" data-es="Forjado en cascada">Cascade forgery</button></div></article><aside class="result" id="attack-result" aria-live="polite"><span class="label" id="attack-label">VERIFY()</span><strong id="attack-status">false</strong><p id="attack-copy">A changed event no longer matches its stored hash. Verification detects the edit.</p></aside></div>
+    </div></section>
+
+    <section id="limit" class="ink"><div class="shell">
+      <div class="heading"><h2 data-en="Tamper-evident is not tamper-proof." data-es="Evidente ante tamper no significa inviolable.">Tamper-evident is not tamper-proof.</h2><p data-en="The project makes its negative result executable: after a cascading recomputation, verify() returns true. Hiding this would turn a useful integrity primitive into a misleading security claim." data-es="El proyecto vuelve ejecutable su resultado negativo: luego de un recálculo en cascada, verify() devuelve true. Ocultarlo convertiría una primitiva de integridad útil en una afirmación de seguridad engañosa.">The project makes its negative result executable: after a cascading recomputation, verify() returns true. Hiding this would turn a useful integrity primitive into a misleading security claim.</p></div>
+      <div class="limit"><article class="limit-statement"><h3 data-en="The chain proves a later edit happened. It does not prove an earlier version was legitimate." data-es="La cadena prueba que ocurrió una edición posterior. No prueba que una versión anterior fuera legítima.">The chain proves a later edit happened. It does not prove an earlier version was legitimate.</h3><p data-en="An attacker with full write access can rewrite the altered entry and every following link into a self-consistent forged chain." data-es="Un atacante con acceso de escritura total puede reescribir la entrada alterada y cada enlace siguiente en una cadena forjada internamente consistente.">An attacker with full write access can rewrite the altered entry and every following link into a self-consistent forged chain.</p></article><div class="anchors"><article class="anchor"><b data-en="OFFLINE SIGNATURE" data-es="FIRMA OFFLINE">OFFLINE SIGNATURE</b><p data-en="Keep a signing key outside the editable machine." data-es="Mantener una clave de firma fuera de la máquina editable.">Keep a signing key outside the editable machine.</p></article><article class="anchor"><b data-en="EXTERNAL LOG" data-es="LOG EXTERNO">EXTERNAL LOG</b><p data-en="Publish checkpoints to a separately controlled transparency log." data-es="Publicar checkpoints en un transparency log controlado por separado.">Publish checkpoints to a separately controlled transparency log.</p></article><article class="anchor"><b data-en="TRUSTED TIME" data-es="TIEMPO CONFIABLE">TRUSTED TIME</b><p data-en="Anchor events with external timestamping such as RFC 3161." data-es="Anclar eventos con timestamping externo como RFC 3161.">Anchor events with external timestamping such as RFC 3161.</p></article><article class="anchor"><b data-en="SECRET HMAC" data-es="HMAC SECRETO">SECRET HMAC</b><p data-en="Use a key the writer-attacker does not possess." data-es="Usar una clave que el atacante-escritor no posea.">Use a key the writer-attacker does not possess.</p></article></div></div>
+    </div></section>
+
+    <section class="ink" style="padding-top:0"><div class="shell"><div class="invariants"><article class="invariant"><b>INV-1 · INV-2</b><p data-en="A normal append verifies; a mutated entry does not." data-es="Un append normal verifica; una entrada mutada no.">A normal append verifies; a mutated entry does not.</p></article><article class="invariant"><b>INV-3 · INV-4</b><p data-en="Reordering is detected; repeated verification is idempotent." data-es="El reordenamiento se detecta; verificar repetidamente es idempotente.">Reordering is detected; repeated verification is idempotent.</p></article><article class="invariant"><b>INV-5</b><p data-en="Each hash is explicitly derived from its payload and prior link." data-es="Cada hash se deriva explícitamente de su payload y enlace previo.">Each hash is explicitly derived from its payload and prior link.</p></article><article class="invariant negative"><b>INV-6 · NEGATIVE</b><p data-en="A cascade forgery verifies true. The limitation is tested, not buried." data-es="Un forjado en cascada verifica true. La limitación se prueba, no se entierra.">A cascade forgery verifies true. The limitation is tested, not buried.</p></article></div></div></section>
+  </main>
+  <footer><div class="shell footer-line"><span data-en="AUDIT CHAIN · INTEGRITY CLAIMS THAT CAN BE EXAMINED" data-es="AUDIT CHAIN · AFIRMACIONES DE INTEGRIDAD QUE SE PUEDEN EXAMINAR">AUDIT CHAIN · INTEGRITY CLAIMS THAT CAN BE EXAMINED</span><span data-en="C · Rust · Java · SHA-256" data-es="C · Rust · Java · SHA-256">C · Rust · Java · SHA-256</span></div></footer>
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const setLanguage = (language) => {
+        root.lang = language; root.dataset.language = language;
+        document.querySelectorAll('[data-en][data-es]').forEach((element) => { element.innerHTML = element.dataset[language]; });
+        document.querySelectorAll('[data-language]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.language === language)));
+        updateAttack(document.querySelector('[data-attack][aria-selected="true"]').dataset.attack);
+      };
+      const attacks = {
+        mutate: { status: 'false', en: 'A changed event no longer matches its stored hash. Verification detects the edit.', es: 'Un evento cambiado ya no coincide con su hash almacenado. La verificación detecta la edición.' },
+        reorder: { status: 'false', en: 'The prior-link relationship no longer matches the new order. Verification detects the reordering.', es: 'La relación con el enlace previo ya no coincide con el nuevo orden. La verificación detecta el reordenamiento.' },
+        delete: { status: 'false', en: 'The entry after the deletion still points to the removed hash. Verification detects the gap.', es: 'La entrada posterior al borrado sigue apuntando al hash eliminado. La verificación detecta el hueco.' },
+        cascade: { status: 'true', en: 'Every following link was recomputed. The forged chain is internally consistent, so an unanchored verify() cannot tell it from a legitimate one.', es: 'Cada enlace siguiente fue recalculado. La cadena forjada es internamente consistente, por lo que verify() sin ancla no puede distinguirla de una legítima.' }
+      };
+      const updateAttack = (attack) => { const value = attacks[attack], language = root.dataset.language; document.querySelector('#attack-status').textContent = value.status; document.querySelector('#attack-copy').textContent = value[language]; document.querySelector('#attack-label').textContent = attack === 'cascade' ? 'VERIFY() · LIMIT' : 'VERIFY() · DETECTED'; };
+      document.querySelectorAll('[data-language]').forEach((button) => button.addEventListener('click', () => setLanguage(button.dataset.language)));
+      document.querySelectorAll('[data-attack]').forEach((button) => button.addEventListener('click', () => { document.querySelectorAll('[data-attack]').forEach((item) => item.setAttribute('aria-selected', String(item === button))); updateAttack(button.dataset.attack); }));
+      setLanguage('en');
+    })();
+  </script>
+</body>
+</html>
